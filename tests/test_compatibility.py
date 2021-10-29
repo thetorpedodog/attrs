@@ -16,6 +16,9 @@ class TestCloudpickleCompat(object):
 
     @given(simple_classes())
     def test_repr(self, cls):
+        """
+        attrs instances can be pickled and un-pickled with cloudpickle.
+        """
         inst = cls()
         # Exact values aren't a concern so long as neither direction
         # raises an exception.
