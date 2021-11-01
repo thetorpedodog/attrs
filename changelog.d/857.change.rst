@@ -1,0 +1,1 @@
+Fixes ``cloudpickle`` compatibility issue, allowing attrs classes to be safely pickled using CloudPickle.

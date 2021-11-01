@@ -1,5 +1,6 @@
 from __future__ import absolute_import, division, print_function
 
+import contextlib
 import copy
 import inspect
 import linecache
@@ -1872,7 +1873,38 @@ def _add_eq(cls, attrs=None):
 # For instance, if an instance contains a dict which contains that instance,
 # we need to know that we're already repr'ing the outside instance from within
 # the dict's repr() call.
-_already_repring = threading.local()
+_repr_context = threading.local()
+
+
+@contextlib.contextmanager
+def _is_already_repring(inst):
+    """
+    Checks whether the given instance of this class is already being repr'd.
+    If not, sets up the thread-local context to record that we are repr'ing
+    this instance.
+
+    Yields ``True`` if we're already repr'ing this class;
+    ``False`` if we are not already repr'ing it.
+    """
+    try:
+        working_set = _repr_context.working_set
+    except AttributeError:
+        # Since 'inst' remains on the stack (i.e.: strongly referenced)
+        # for the duration of this call, it's safe to depend on id(...)
+        # stability, and not need to track the instance and therefore
+        # worry about properties like weakref- or hash-ability.
+        _repr_context.working_set = working_set = {id(inst)}
+        was_repring = False
+    else:
+        was_repring = id(inst) in working_set
+        if not was_repring:
+            working_set.add(id(inst))
+    try:
+        yield was_repring
+    finally:
+        if not was_repring:
+            working_set.remove(id(inst))
+
 
 if HAS_F_STRINGS:
 
@@ -1891,7 +1923,7 @@ if HAS_F_STRINGS:
             for name, r, _ in attr_names_with_reprs
             if r != repr
         }
-        globs["_already_repring"] = _already_repring
+        globs["_is_already_repring"] = _is_already_repring
         globs["AttributeError"] = AttributeError
         globs["NOTHING"] = NOTHING
         attribute_fragments = []
@@ -1916,24 +1948,13 @@ if HAS_F_STRINGS:
         else:
             cls_name_fragment = ns + ".{self.__class__.__name__}"
 
-        lines = []
-        lines.append("def __repr__(self):")
-        lines.append("  try:")
-        lines.append("    working_set = _already_repring.working_set")
-        lines.append("  except AttributeError:")
-        lines.append("    working_set = {id(self),}")
-        lines.append("    _already_repring.working_set = working_set")
-        lines.append("  else:")
-        lines.append("    if id(self) in working_set:")
-        lines.append("      return '...'")
-        lines.append("    else:")
-        lines.append("      working_set.add(id(self))")
-        lines.append("  try:")
-        lines.append(
-            "    return f'%s(%s)'" % (cls_name_fragment, repr_fragment)
-        )
-        lines.append("  finally:")
-        lines.append("    working_set.remove(id(self))")
+        lines = [
+            "def __repr__(self):",
+            "  with _is_already_repring(self) as already:",
+            "    if already:",
+            "      return '...'",
+            "    return f'%s(%s)'" % (cls_name_fragment, repr_fragment),
+        ]
 
         return _make_method(
             "__repr__", "\n".join(lines), unique_filename, globs=globs
@@ -1961,34 +1982,24 @@ else:
             """
             Automatically created by attrs.
             """
-            try:
-                working_set = _already_repring.working_set
-            except AttributeError:
-                working_set = set()
-                _already_repring.working_set = working_set
+            with _is_already_repring(self) as was_repring:
+                if was_repring:
+                    return "..."
 
-            if id(self) in working_set:
-                return "..."
-            real_cls = self.__class__
-            if ns is None:
-                qualname = getattr(real_cls, "__qualname__", None)
-                if qualname is not None:  # pragma: no cover
-                    # This case only happens on Python 3.5 and 3.6. We exclude
-                    # it from coverage, because we don't want to slow down our
-                    # test suite by running them under coverage too for this
-                    # one line.
-                    class_name = qualname.rsplit(">.", 1)[-1]
+                real_cls = self.__class__
+                if ns is None:
+                    qualname = getattr(real_cls, "__qualname__", None)
+                    if qualname is not None:  # pragma: no cover
+                        # This case only happens on Python 3.5 and 3.6.
+                        # We exclude it from coverage, because we don't want to
+                        # slow down our test suite by running them under
+                        # coverage too for this one line.
+                        class_name = qualname.rsplit(">.", 1)[-1]
+                    else:
+                        class_name = real_cls.__name__
                 else:
-                    class_name = real_cls.__name__
-            else:
-                class_name = ns + "." + real_cls.__name__
+                    class_name = ns + "." + real_cls.__name__
 
-            # Since 'self' remains on the stack (i.e.: strongly referenced)
-            # for the duration of this call, it's safe to depend on id(...)
-            # stability, and not need to track the instance and therefore
-            # worry about properties like weakref- or hash-ability.
-            working_set.add(id(self))
-            try:
                 result = [class_name, "("]
                 first = True
                 for name, attr_repr in attr_names_with_reprs:
@@ -2000,8 +2011,6 @@ else:
                         (name, "=", attr_repr(getattr(self, name, NOTHING)))
                     )
                 return "".join(result) + ")"
-            finally:
-                working_set.remove(id(self))
 
         return __repr__
 
