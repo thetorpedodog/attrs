@@ -4,24 +4,11 @@ import copy
 import inspect
 import linecache
 import sys
-import threading
 import warnings
 
 from operator import itemgetter
 
-from . import _config, setters
-from ._compat import (
-    HAS_F_STRINGS,
-    PY2,
-    PY310,
-    PYPY,
-    isclass,
-    iteritems,
-    metadata_proxy,
-    new_class,
-    ordered_dict,
-    set_closure_cell,
-)
+from . import _compat, _config, setters
 from .exceptions import (
     DefaultAlreadySetError,
     FrozenInstanceError,
@@ -31,7 +18,7 @@ from .exceptions import (
 )
 
 
-if not PY2:
+if not _compat.PY2:
     import typing
 
 
@@ -53,7 +40,7 @@ _classvar_prefixes = (
 # (when slots=True)
 _hash_cache_field = "_attrs_cached_hash"
 
-_empty_metadata_singleton = metadata_proxy({})
+_empty_metadata_singleton = _compat.metadata_proxy({})
 
 # Unique object for unequivocal getattr() defaults.
 _sentinel = object()
@@ -103,7 +90,7 @@ class _CacheHashWrapper(int):
     See GH #613 for more details.
     """
 
-    if PY2:
+    if _compat.PY2:
         # For some reason `type(None)` isn't callable in Python 2, but we don't
         # actually need a constructor for None objects, we just need any
         # available function that returns None.
@@ -521,9 +508,9 @@ def _transform_attrs(
     anns = _get_annotations(cls)
 
     if these is not None:
-        ca_list = [(name, ca) for name, ca in iteritems(these)]
+        ca_list = [(name, ca) for name, ca in _compat.iteritems(these)]
 
-        if not isinstance(these, ordered_dict):
+        if not isinstance(these, _compat.ordered_dict):
             ca_list.sort(key=_counter_getter)
     elif auto_attribs is True:
         ca_names = {
@@ -613,7 +600,7 @@ def _transform_attrs(
     return _Attributes((AttrsClass(attrs), base_attrs, base_attr_map))
 
 
-if PYPY:
+if _compat.PYPY:
 
     def _frozen_setattrs(self, name, value):
         """
@@ -795,7 +782,7 @@ class _ClassBuilder(object):
         """
         cd = {
             k: v
-            for k, v in iteritems(self._cls_dict)
+            for k, v in _compat.iteritems(self._cls_dict)
             if k not in tuple(self._attr_names) + ("__dict__", "__weakref__")
         }
 
@@ -850,7 +837,7 @@ class _ClassBuilder(object):
         # we collect them here and update the class dict
         reused_slots = {
             slot: slot_descriptor
-            for slot, slot_descriptor in iteritems(existing_slots)
+            for slot, slot_descriptor in _compat.iteritems(existing_slots)
             if slot in slot_names
         }
         slot_names = [name for name in slot_names if name not in reused_slots]
@@ -893,7 +880,7 @@ class _ClassBuilder(object):
                     pass
                 else:
                     if match:
-                        set_closure_cell(cell, cls)
+                        _compat.set_closure_cell(cell, cls)
 
         return cls
 
@@ -1475,7 +1462,7 @@ def attrs(
     .. versionchanged:: 21.1.0 *cmp* undeprecated
     .. versionadded:: 21.3.0 *match_args*
     """
-    if auto_detect and PY2:
+    if auto_detect and _compat.PY2:
         raise PythonTooOldError(
             "auto_detect only works on Python 3 and later."
         )
@@ -1591,7 +1578,7 @@ def attrs(
                 )
 
         if (
-            PY310
+            _compat.PY310
             and match_args
             and not _has_own_attribute(cls, "__match_args__")
         ):
@@ -1614,7 +1601,7 @@ Internal alias so we can use it in functions that take an argument called
 """
 
 
-if PY2:
+if _compat.PY2:
 
     def _has_frozen_base_class(cls):
         """
@@ -1666,7 +1653,7 @@ def _make_hash(cls, attrs, frozen, cache_hash):
     if not cache_hash:
         hash_def += "):"
     else:
-        if not PY2:
+        if not _compat.PY2:
             hash_def += ", *"
 
         hash_def += (
@@ -1864,17 +1851,7 @@ def _add_eq(cls, attrs=None):
     return cls
 
 
-# Thread-local global to track attrs instances which are already being repr'd.
-# This is needed because there is no other (thread-safe) way to pass info
-# about the instances that are already being repr'd through the call stack
-# in order to ensure we don't perform infinite recursion.
-#
-# For instance, if an instance contains a dict which contains that instance,
-# we need to know that we're already repr'ing the outside instance from within
-# the dict's repr() call.
-_already_repring = threading.local()
-
-if HAS_F_STRINGS:
+if _compat.HAS_F_STRINGS:
 
     def _make_repr(attrs, ns, cls):
         unique_filename = "repr"
@@ -1891,7 +1868,7 @@ if HAS_F_STRINGS:
             for name, r, _ in attr_names_with_reprs
             if r != repr
         }
-        globs["_already_repring"] = _already_repring
+        globs["_compat"] = _compat
         globs["AttributeError"] = AttributeError
         globs["NOTHING"] = NOTHING
         attribute_fragments = []
@@ -1919,10 +1896,10 @@ if HAS_F_STRINGS:
         lines = []
         lines.append("def __repr__(self):")
         lines.append("  try:")
-        lines.append("    working_set = _already_repring.working_set")
+        lines.append("    working_set = _compat.repr_context.working_set")
         lines.append("  except AttributeError:")
         lines.append("    working_set = {id(self),}")
-        lines.append("    _already_repring.working_set = working_set")
+        lines.append("    _compat.repr_context.working_set = working_set")
         lines.append("  else:")
         lines.append("    if id(self) in working_set:")
         lines.append("      return '...'")
@@ -1962,10 +1939,10 @@ else:
             Automatically created by attrs.
             """
             try:
-                working_set = _already_repring.working_set
+                working_set = _compat.repr_context.working_set
             except AttributeError:
                 working_set = set()
-                _already_repring.working_set = working_set
+                _compat.repr_context.working_set = working_set
 
             if id(self) in working_set:
                 return "..."
@@ -2035,7 +2012,7 @@ def fields(cls):
     ..  versionchanged:: 16.2.0 Returned tuple allows accessing the fields
         by name.
     """
-    if not isclass(cls):
+    if not _compat.isclass(cls):
         raise TypeError("Passed object must be a class.")
     attrs = getattr(cls, "__attrs_attrs__", None)
     if attrs is None:
@@ -2063,14 +2040,14 @@ def fields_dict(cls):
 
     .. versionadded:: 18.1.0
     """
-    if not isclass(cls):
+    if not _compat.isclass(cls):
         raise TypeError("Passed object must be a class.")
     attrs = getattr(cls, "__attrs_attrs__", None)
     if attrs is None:
         raise NotAnAttrsClassError(
             "{cls!r} is not an attrs-decorated class.".format(cls=cls)
         )
-    return ordered_dict(((a.name, a) for a in attrs))
+    return _compat.ordered_dict(((a.name, a) for a in attrs))
 
 
 def validate(inst):
@@ -2223,7 +2200,7 @@ def _assign_with_converter(attr_name, value_var, has_on_setattr):
     )
 
 
-if PY2:
+if _compat.PY2:
 
     def _unpack_kw_only_py2(attr_name, default=None):
         """
@@ -2497,7 +2474,7 @@ def _attrs_to_init_script(
         if a.init is True:
             if a.type is not None and a.converter is None:
                 annotations[arg_name] = a.type
-            elif a.converter is not None and not PY2:
+            elif a.converter is not None and not _compat.PY2:
                 # Try to get the type from the converter.
                 sig = None
                 try:
@@ -2554,7 +2531,7 @@ def _attrs_to_init_script(
 
     args = ", ".join(args)
     if kw_only_args:
-        if PY2:
+        if _compat.PY2:
             lines = _unpack_kw_only_lines_py2(kw_only_args) + lines
 
             args += "%s**_kw_only" % (", " if args else "",)  # leading comma
@@ -2673,7 +2650,7 @@ class Attribute(object):
         bound_setattr(
             "metadata",
             (
-                metadata_proxy(metadata)
+                _compat.metadata_proxy(metadata)
                 if metadata
                 else _empty_metadata_singleton
             ),
@@ -2768,7 +2745,7 @@ class Attribute(object):
             else:
                 bound_setattr(
                     name,
-                    metadata_proxy(value)
+                    _compat.metadata_proxy(value)
                     if value
                     else _empty_metadata_singleton,
                 )
@@ -3044,7 +3021,7 @@ def make_class(name, attrs, bases=(object,), **attributes_arguments):
     if user_init is not None:
         body["__init__"] = user_init
 
-    type_ = new_class(name, bases, {}, lambda ns: ns.update(body))
+    type_ = _compat.new_class(name, bases, {}, lambda ns: ns.update(body))
 
     # For pickling to work, the __module__ variable needs to be set to the
     # frame where the class is created.  Bypass this step in environments where
@@ -3131,7 +3108,7 @@ def pipe(*converters):
 
         return val
 
-    if not PY2:
+    if not _compat.PY2:
         if not converters:
             # If the converter list is empty, pipe_converter is the identity.
             A = typing.TypeVar("A")
